@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <regex>
+#include <thread>
 
 #include <boost/algorithm/string.hpp>
 #include <gtest/gtest.h>
@@ -67,6 +68,7 @@
 #include "yb/util/format.h"
 #include "yb/util/json_document.h"
 #include "yb/util/net/net_util.h"
+#include "yb/util/scope_exit.h"
 #include "yb/util/status_format.h"
 #include "yb/util/subprocess.h"
 
@@ -205,6 +207,131 @@ class AdminCliTest : public AdminTestBase {
 
   TmpDirProvider tmp_dir_;
 };
+
+// Verify the "did you mean" help for a misspelled operation, none of which needs a running
+// cluster (the operation is checked before yb-admin connects to the master): prefix matches,
+// fuzzy (edit-distance) matches, and that an invalid operation no longer dumps the full command
+// list (the original complaint in the issue) while running with no operation still prints the
+// full usage as help, structured into sections and without the raw gflags dump.
+TEST_F(AdminCliTest, InvalidOperationSuggestsClosestCommands) {
+  const auto exe_path = GetAdminToolPath();
+  constexpr auto kUnusedMasterAddress = "127.0.0.1:0";
+  // This marker only appears in the full usage/command listing (which is printed to stdout).
+  constexpr auto kFullUsageMarker = "Operations:";
+  std::string output;
+  std::string error;
+
+  // Prefix match: an unambiguous typo suggests the single command it is a prefix of.
+  ASSERT_NOK(Subprocess::Call(
+      ToStringVector(
+          exe_path, "--master_addresses", kUnusedMasterAddress, "list_snapshot_schedule"),
+      /* output */ nullptr, &error));
+  ASSERT_STR_CONTAINS(error, "Did you mean one of these?");
+  ASSERT_STR_CONTAINS(error, "list_snapshot_schedules");
+
+  // Prefix match: a prefix of several commands lists every candidate and a hint, and must not dump
+  // the full command list on either stream.
+  ASSERT_NOK(Subprocess::Call(
+      ToStringVector(exe_path, "--master_addresses", kUnusedMasterAddress, "list_table"), &output,
+      &error));
+  ASSERT_STR_CONTAINS(error, "Did you mean one of these?");
+  ASSERT_STR_CONTAINS(error, "list_tables");
+  ASSERT_STR_CONTAINS(error, "list_tablets");
+  ASSERT_STR_CONTAINS(error, "to see all available operations");
+  ASSERT_STR_NOT_CONTAINS(output, kFullUsageMarker);
+  ASSERT_STR_NOT_CONTAINS(error, kFullUsageMarker);
+
+  // Fuzzy match: a transposition ("tabels" instead of "tables") is not a prefix but is close.
+  ASSERT_NOK(Subprocess::Call(
+      ToStringVector(exe_path, "--master_addresses", kUnusedMasterAddress, "list_tabels"), nullptr,
+      &error));
+  ASSERT_STR_CONTAINS(error, "Did you mean one of these?");
+  ASSERT_STR_CONTAINS(error, "list_tables");
+
+  // Fuzzy match: a missing leading character ("ist_tables") is one edit away from "list_tables".
+  ASSERT_NOK(Subprocess::Call(
+      ToStringVector(exe_path, "--master_addresses", kUnusedMasterAddress, "ist_tables"), nullptr,
+      &error));
+  ASSERT_STR_CONTAINS(error, "list_tables");
+
+  // An empty operation is a prefix of every command, but should not list all of them.
+  ASSERT_NOK(Subprocess::Call(
+      ToStringVector(exe_path, "--master_addresses", kUnusedMasterAddress, ""), nullptr, &error));
+  ASSERT_STR_NOT_CONTAINS(error, "Did you mean one of these?");
+
+  // A far-off garbage string is beyond the edit-distance tolerance, so nothing is suggested.
+  ASSERT_NOK(Subprocess::Call(
+      ToStringVector(exe_path, "--master_addresses", kUnusedMasterAddress, "zzzzzzzzzzzzzzzzzz"),
+      nullptr, &error));
+  ASSERT_STR_NOT_CONTAINS(error, "Did you mean one of these?");
+
+  // Running with no operation at all should still print the full usage as help on stdout,
+  // structured with clear sections, and without leaking the raw gflags dump (source path, flag
+  // types/defaults) that google::ShowUsageWithFlagsRestrict used to append.
+  ASSERT_NOK(Subprocess::Call(
+      ToStringVector(exe_path, "--master_addresses", kUnusedMasterAddress), &output, &error));
+  ASSERT_STR_CONTAINS(output, "Usage:");
+  ASSERT_STR_CONTAINS(output, "Common global flags:");
+  ASSERT_STR_CONTAINS(output, "Tip:");
+  ASSERT_STR_CONTAINS(output, "Example:");
+  ASSERT_STR_CONTAINS(output, kFullUsageMarker);
+  // The <namespace>/<table>/<index> placeholder definitions are no longer dumped in a global
+  // footer here -- only a minority of operations use them, and RunCommand() already surfaces the
+  // relevant definitions alongside a specific command's usage on a bad-arguments error instead
+  // (see PrintArgumentExpressions below). The string is <namespace>'s expansion, which the footer
+  // printed and no operation line contains.
+  ASSERT_STR_NOT_CONTAINS(output, "[(ycql|ysql).]<namespace_name>");
+  ASSERT_STR_NOT_CONTAINS(output, "Flags from");
+  ASSERT_STR_NOT_CONTAINS(output, "yb-admin_cli.cc:");
+  // google::ProgramUsage() emits this when SetUsageMessage() has not been called. Any path that
+  // prints usage before SetUsage() runs shows it as the entire message -- see the
+  // --init_master_addrs test below.
+  ASSERT_STR_NOT_CONTAINS(output, "SetUsageMessage");
+  ASSERT_STR_NOT_CONTAINS(error, "SetUsageMessage");
+
+  // The Operations: list must number only the entries it actually prints. It used to number by
+  // each command's index in the full (including hidden) command table, so a hidden command's slot
+  // left a gap in the visible numbering, e.g. "85. ..." followed directly by "87. ...".
+  std::vector<int> operation_numbers;
+  std::regex operation_number_re(R"(\n\s*(\d+)\. \S)");
+  for (std::sregex_iterator it(output.begin(), output.end(), operation_number_re), end; it != end;
+       ++it) {
+    operation_numbers.push_back(std::stoi((*it)[1].str()));
+  }
+  ASSERT_FALSE(operation_numbers.empty());
+  for (size_t idx = 0; idx < operation_numbers.size(); ++idx) {
+    ASSERT_EQ(operation_numbers[idx], static_cast<int>(idx) + 1)
+        << "gap or duplicate in operation numbering at position " << idx;
+  }
+}
+
+// A malformed --init_master_addrs must be reported on its own terms. The flag is read in Run()
+// before SetUsage() has been called, so returning InvalidArgument here makes main() print an unset
+// google::ProgramUsage() -- the user's entire error message becomes "Warning: SetUsageMessage()
+// never called". A value that splits to nothing ("," -- ParseStrings uses SkipEmpty) parses as OK
+// with zero addresses, and indexing the empty vector crashes with SIGSEGV (#33435).
+TEST_F(AdminCliTest, MalformedInitMasterAddrs) {
+  const auto exe_path = GetAdminToolPath();
+  std::string output;
+  std::string error;
+
+  for (const auto& bad_value : {"host:99999", "host:abc", ",", ",,"}) {
+    output.clear();
+    error.clear();
+    ASSERT_NOK(Subprocess::Call(
+        ToStringVector(exe_path, "--init_master_addrs", bad_value, "list_tables"), &output,
+        &error))
+        << "--init_master_addrs=" << bad_value << " unexpectedly succeeded";
+    // Naming the flag proves we took the targeted path: a crash prints no such line, and the
+    // pre-SetUsage InvalidArgument path printed only the gflags warning.
+    ASSERT_STR_CONTAINS(error, "Invalid --init_master_addrs");
+    ASSERT_STR_NOT_CONTAINS(error, "SetUsageMessage");
+    ASSERT_STR_NOT_CONTAINS(output, "SetUsageMessage");
+    // A bad flag value is not a usage error, so neither stream gets the operation catalog.
+    ASSERT_STR_NOT_CONTAINS(output, "Operations:");
+    ASSERT_STR_NOT_CONTAINS(error, "Operations:");
+  }
+}
 
 // Test yb-admin config change while running a workload.
 // 1. Instantiate external mini cluster with 3 TS.
@@ -2084,14 +2211,18 @@ TEST_F(AdminCliTest, TestListNamespaces) {
 }
 
 TEST_F(AdminCliTest, PrintArgumentExpressions) {
-  const auto namespace_expression = "<namespace>:\n [(ycql|ysql).]<namespace_name> (default ycql.)";
-  const auto table_expression = "<table>:\n <namespace> <table_name> | tableid.<table_id>";
-  const auto index_expression = "<index>:\n  <namespace> <index_name> | tableid.<index_id>";
+  const auto namespace_expression =
+      "<namespace>\n  [(ycql|ysql).]<namespace_name> (default: ycql.)";
+  const auto table_expression = "<table>\n  <namespace> <table_name> | tableid.<table_id>";
+  const auto index_expression = "<index>\n  <namespace> <index_name> | tableid.<index_id>";
 
   BuildAndStart();
+  // The <table> and <index> definitions reference <namespace>, so <namespace>'s definition must
+  // accompany them even when the command's arguments never name <namespace> directly.
   auto status = CallAdmin("delete_table");
   ASSERT_NOK(status);
   ASSERT_NE(status.ToString().find(table_expression), std::string::npos);
+  ASSERT_NE(status.ToString().find(namespace_expression), std::string::npos);
 
   status = CallAdmin("delete_namespace");
   ASSERT_NOK(status);
@@ -2100,12 +2231,37 @@ TEST_F(AdminCliTest, PrintArgumentExpressions) {
   status = CallAdmin("delete_index");
   ASSERT_NOK(status);
   ASSERT_NE(status.ToString().find(index_expression), std::string::npos);
+  ASSERT_NE(status.ToString().find(namespace_expression), std::string::npos);
 
   status = CallAdmin("add_universe_key_to_all_masters");
   ASSERT_NOK(status);
   ASSERT_EQ(status.ToString().find(namespace_expression), std::string::npos);
   ASSERT_EQ(status.ToString().find(table_expression), std::string::npos);
   ASSERT_EQ(status.ToString().find(index_expression), std::string::npos);
+
+  // import_snapshot's usage_arguments_ is "<file_name> [<namespace> <table_name>
+  // [<table_name>]...]" -- <namespace> only ever appears bracketed. Called with no arguments at
+  // all, it fails argument-count validation before touching the placeholder, so this only
+  // exercises the bracket-stripping fix, not a namespace-specific error.
+  status = CallAdmin("import_snapshot");
+  ASSERT_NOK(status);
+  ASSERT_NE(status.ToString().find(namespace_expression), std::string::npos);
+
+  // list_change_data_streams' usage_arguments_ is "[<namespace>]" -- also always bracketed.
+  status = CallAdmin("list_change_data_streams", "extra_arg_1", "extra_arg_2");
+  ASSERT_NOK(status);
+  ASSERT_NE(status.ToString().find(namespace_expression), std::string::npos);
+
+  // create_snapshot's usage_arguments_ repeats a placeholder ("<table> [<table>]..."); with
+  // bracketed tokens now matching, its definition must still be printed only once.
+  status = CallAdmin("create_snapshot");
+  ASSERT_NOK(status);
+  const auto create_snapshot_output = status.ToString();
+  const auto first_table_definition = create_snapshot_output.find(table_expression);
+  ASSERT_NE(first_table_definition, std::string::npos);
+  ASSERT_EQ(
+      create_snapshot_output.find(table_expression, first_table_definition + 1),
+      std::string::npos);
 }
 
 TEST_F(AdminCliTest, TestCompactionStatusBeforeCompaction) {
@@ -2498,6 +2654,65 @@ TEST_F(AdminCliTest, TestRemoveTabletServer) {
   EXPECT_EQ(find_tserver_result, std::nullopt);
 }
 
+// Regression test for https://github.com/yugabyte/yugabyte-db/issues/32681:
+// list_tablet_server_log_locations must not abort on DEAD tservers, and must
+// sort alive tservers ahead of dead ones.
+TEST_F(AdminCliTest, TestListTabletServerLogLocationsWithDeadTServer) {
+  ANNOTATE_UNPROTECTED_WRITE(FLAGS_num_tablet_servers) = 2;
+  ANNOTATE_UNPROTECTED_WRITE(FLAGS_num_replicas) = 1;
+  BuildAndStart({}, {"--enable_load_balancing=false", "--tserver_unresponsive_timeout_ms=5000"});
+
+  // Kill tserver 0 (the one that sorts first by host/port) and keep tserver 1
+  // alive, so alive-first ordering must actively reorder the two entries rather
+  // than coincidentally matching the host/port tie-break.
+  auto* dead_ts = cluster_->tablet_server(0);
+  auto* alive_ts = cluster_->tablet_server(1);
+  const auto dead_uuid = dead_ts->uuid();
+  const auto alive_uuid = alive_ts->uuid();
+
+  // Helper: extract the LogLocation column for a given tserver UUID.
+  auto log_location_for = [](const std::string& output, const std::string& uuid) -> std::string {
+    std::smatch match;
+    if (!std::regex_search(output, match, std::regex(uuid + R"(\s+\S+\s+(\S+))"))) {
+      return "";
+    }
+    return match[1].str();
+  };
+
+  // While both are alive, both report a real log directory (no N/A).
+  auto output_alive = ASSERT_RESULT(CallAdmin("list_tablet_server_log_locations"));
+  ASSERT_STR_CONTAINS(output_alive, dead_uuid);
+  ASSERT_STR_CONTAINS(output_alive, alive_uuid);
+  ASSERT_STR_NOT_CONTAINS(output_alive, "N/A");
+
+  dead_ts->Shutdown();
+  auto cluster_client =
+      master::MasterClusterClient(cluster_->GetLeaderMasterProxy<master::MasterClusterProxy>());
+  ASSERT_OK(WaitFor(
+      [&cluster_client, &dead_uuid]() -> Result<bool> {
+        auto tserver = VERIFY_RESULT(cluster_client.GetTabletServer(dead_uuid));
+        return tserver && !tserver->alive();
+      },
+      30s, "tserver not marked dead"));
+
+  // Must succeed (not connect-timeout abort) and list both tservers.
+  auto output = ASSERT_RESULT(CallAdmin("list_tablet_server_log_locations"));
+  ASSERT_STR_CONTAINS(output, dead_uuid);
+  ASSERT_STR_CONTAINS(output, alive_uuid);
+
+  // Alive tserver reports a real log location; dead tserver reports N/A.
+  ASSERT_NE(log_location_for(output, alive_uuid), "N/A");
+  ASSERT_NE(log_location_for(output, alive_uuid), "");
+  ASSERT_EQ(log_location_for(output, dead_uuid), "N/A");
+
+  // Alive tserver sorts ahead of the dead one.
+  const auto alive_pos = output.find(alive_uuid);
+  const auto dead_pos = output.find(dead_uuid);
+  ASSERT_NE(alive_pos, std::string::npos);
+  ASSERT_NE(dead_pos, std::string::npos);
+  ASSERT_LT(alive_pos, dead_pos);
+}
+
 TEST_F(AdminCliTest, TestDisallowImplicitStreamCreation) {
   std::string test_namespace = "pg_namespace_cdc";
   BuildAndStart();
@@ -2588,6 +2803,247 @@ TEST_F(AdminCliTest, TestGetTableXorHash) {
   ASSERT_GT(row_count2, 100);
   ASSERT_NE(xor_hash2, 0);
   ASSERT_NE(xor_hash, xor_hash2);
+}
+
+// DB-21953: get_table_hash at a read_ht below the history-retention cutoff must fail with
+// SnapshotTooOld, not return a wrong hash over a compacted view. Before the fix it returned OK.
+TEST_F(AdminCliTest, TestGetTableHashRejectsTooOldReadTime) {
+  // No history retention, so one compaction pushes the cutoff past any earlier read time.
+  std::vector<std::string> ts_flags = {
+    "--timestamp_history_retention_interval_sec=0"s,
+  };
+  std::vector<std::string> master_flags;
+  BuildAndStart(ts_flags, master_flags);
+
+  const auto table_name =
+      YBTableName(YQLDatabase::YQL_DATABASE_CQL, kTableName.namespace_name(), "too_old_table");
+  client::TableHandle table;
+  ASSERT_OK(table.Create(
+      table_name, /* num_tablets */ 1, client::YBSchema(schema_), client_.get()));
+
+  TestYcqlWorkload workload(cluster_.get());
+  workload.set_table_name(table_name);
+  workload.Setup();
+  workload.Start();
+  workload.WaitInserted(200);
+  workload.StopAndJoin();
+
+  auto tables = ASSERT_RESULT(client_->ListTables(table_name.table_name()));
+  ASSERT_EQ(1, tables.size());
+  const auto table_id = tables.front().table_id();
+
+  // Grab a read time that's valid now; it'll fall below the cutoff once we compact.
+  const auto too_old_ht = ASSERT_RESULT(cluster_->master()->GetServerTime());
+
+  // Reading at it now works (still within the window).
+  ASSERT_OK(CallAdmin("get_table_hash", table_id, too_old_ht.ToUint64()));
+
+  // More writes + compaction GC the history below the cutoff and push the cutoff past too_old_ht.
+  workload.Start();
+  workload.WaitInserted(workload.rows_inserted() + 200);
+  workload.StopAndJoin();
+
+  // Cutoff tracks safe time, so sleep to make sure too_old_ht is strictly behind it.
+  SleepFor(2s * kTimeMultiplier);
+  ASSERT_OK(CompactTablets(cluster_.get(), 300s * kTimeMultiplier));
+
+  // Now the same read must be rejected, not return a stale hash.
+  auto result = CallAdmin("get_table_hash", table_id, too_old_ht.ToUint64());
+  ASSERT_NOK(result);
+  ASSERT_STR_CONTAINS(result.status().ToString(), "Snapshot too old");
+
+  // A default (safe time) read still works -- only the too-old path is rejected.
+  ASSERT_OK(CallAdmin("get_table_hash", table_id));
+}
+
+// get_table_hash tests. It only talks to leaders, whose safe time cannot be held back without
+// costing them their majority, so these tests use a read time ahead of the cluster's clock instead.
+class AdminCliGetTableHashReadTimeTest : public AdminCliTest {
+ protected:
+  // Brings up the cluster with a populated multi-tablet YCQL table in hash_table_id_.
+  void StartClusterWithTable() {
+    BuildAndStart();
+
+    const auto table_name = YBTableName(
+        YQLDatabase::YQL_DATABASE_CQL, kTableName.namespace_name(), "read_time_table");
+    client::TableHandle table;
+    ASSERT_OK(table.Create(
+        table_name, /* num_tablets */ 3, client::YBSchema(schema_), client_.get()));
+
+    TestYcqlWorkload workload(cluster_.get());
+    workload.set_table_name(table_name);
+    workload.Setup();
+    workload.Start();
+    workload.WaitInserted(100);
+    workload.StopAndJoin();
+
+    auto tables = ASSERT_RESULT(client_->ListTables(table_name.table_name()));
+    ASSERT_EQ(1, tables.size());
+    hash_table_id_ = tables.front().table_id();
+  }
+
+  // A read time no replica has reached, but inside dump_tablet_data_max_read_time_ahead_ms so it
+  // counts as lag, not as a caller error. Recompute per command: yb-admin startup eats a second or
+  // two.
+  Result<uint64_t> ReadTimeAheadOfClock(int64_t seconds) {
+    return VERIFY_RESULT(cluster_->master()->GetServerTime()).AddSeconds(seconds).ToUint64();
+  }
+
+  // Reads get_table_hash's whole-table {row count, XOR hash} back out of its stdout.
+  static Result<std::pair<uint64_t, uint64_t>> Totals(const std::string& output) {
+    const auto value = [&output](const char* prefix) -> Result<uint64_t> {
+      auto pos = output.find(prefix);
+      SCHECK_NE(
+          pos, std::string::npos, NotFound,
+          Format("'$0' missing from output: $1", prefix, output));
+      return std::stoull(output.substr(pos + strlen(prefix)));
+    };
+    auto row_count = VERIFY_RESULT(value("Total row count: "));
+    auto xor_hash = VERIFY_RESULT(value("Total XOR hash: "));
+    return std::make_pair(row_count, xor_hash);
+  }
+
+  std::string hash_table_id_;
+};
+
+// A read time nothing has reached must be reported as such, not answered with whatever happens to
+// be applied. With a zero wait, straight away.
+TEST_F(AdminCliGetTableHashReadTimeTest, TestGetTableHashReadTimeNotReachedFailsFast) {
+  ASSERT_NO_FATALS(StartClusterWithTable());
+
+  const auto past_ht = ASSERT_RESULT(cluster_->master()->GetServerTime());
+  // Safe time trails the present. Let it move past past_ht before asking with a zero wait.
+  SleepFor(2s * kTimeMultiplier);
+
+  // A read time the tablets have reached does not involve the wait at all.
+  ASSERT_OK(CallAdmin(
+      "--read_time_wait_ms", 0, "get_table_hash", hash_table_id_, past_ht.ToUint64()));
+
+  const auto start = MonoTime::Now();
+  auto result = CallAdmin(
+      "--read_time_wait_ms", 0, "get_table_hash", hash_table_id_,
+      ASSERT_RESULT(ReadTimeAheadOfClock(10)));
+  ASSERT_NOK(result);
+  ASSERT_STR_CONTAINS(result.status().ToString(), "is not yet safe on this replica");
+  ASSERT_STR_CONTAINS(result.status().ToString(), "behind by");
+  // Zero means zero: it did not sit out the 10s gap.
+  ASSERT_LT(MonoTime::Now() - start, MonoDelta::FromSeconds(30));
+
+  // A key range narrows which rows get hashed. It must not narrow away the read-time check.
+  result = CallAdmin(
+      "--read_time_wait_ms", 0, "get_table_hash", hash_table_id_,
+      ASSERT_RESULT(ReadTimeAheadOfClock(10)),
+      /* start_key_hex */ "8000", /* end_key_hex */ std::string());
+  ASSERT_NOK(result);
+  ASSERT_STR_CONTAINS(result.status().ToString(), "is not yet safe on this replica");
+}
+
+// Given time to wait, get_table_hash waits instead of failing, and answers with the same data as a
+// read at that time once it is in the past.
+TEST_F(AdminCliGetTableHashReadTimeTest, TestGetTableHashWaitsForReadTime) {
+  ASSERT_NO_FATALS(StartClusterWithTable());
+
+  const auto past_ht = ASSERT_RESULT(cluster_->master()->GetServerTime());
+  SleepFor(2s * kTimeMultiplier);
+  const auto past_totals = ASSERT_RESULT(Totals(
+      ASSERT_RESULT(CallAdmin("get_table_hash", hash_table_id_, past_ht.ToUint64()))));
+  ASSERT_GT(past_totals.first, 0ULL);
+  ASSERT_NE(past_totals.second, 0ULL);
+
+  // Nothing writes between the two read times, so the totals have to match.
+  const auto future_totals = ASSERT_RESULT(Totals(ASSERT_RESULT(CallAdmin(
+      "--read_time_wait_ms", 30000, "get_table_hash", hash_table_id_,
+      ASSERT_RESULT(ReadTimeAheadOfClock(8))))));
+  ASSERT_EQ(future_totals, past_totals);
+}
+
+// DB-21953: get_table_hash registers its read time with the retention policy, which also pins the
+// history cutoff for the whole call. That pin is what stops a compaction running alongside the scan
+// from garbage-collecting row versions the scan still needs.
+//
+// To actually exercise the pin we need a scan that opens more than one iterator at the same read
+// time: a single open iterator is already safe, since it holds onto its RocksDB files until it
+// finishes. A colocated tablet gives us exactly that -- one whole-tablet scan walks each colocated
+// table with its own iterator, all under a single read time T. So we get the scan going on the
+// first table, kick off a compaction (with history retention off it would push the cutoff past T
+// and drop the old versions), and then check that the rest of the scan still reads the data as it
+// was at T.
+//
+// TEST_fetch_next_delay_ms slows the scan down so the compaction reliably lands in the middle of
+// it. With the fix the cutoff stays pinned and the totals match the pre-update baseline; without it
+// the second table reads the compacted view and the hash comes back wrong.
+TEST_F(AdminCliTestWithYSQL, TestGetTableHashPinsCutoffDuringConcurrentCompaction) {
+  std::vector<std::string> ts_flags = {
+    "--timestamp_history_retention_interval_sec=0"s,
+  };
+  std::vector<std::string> master_flags;
+  BuildAndStart(ts_flags, master_flags);
+
+  // Two colocated tables sharing one tablet, so one whole-tablet scan opens two iterators in turn.
+  auto conn = ASSERT_RESULT(cluster_->ConnectToDB("yugabyte"));
+  ASSERT_OK(conn.Execute("CREATE DATABASE codb WITH colocation = true"));
+  auto codb = ASSERT_RESULT(cluster_->ConnectToDB("codb"));
+  ASSERT_OK(codb.Execute("CREATE TABLE colo_a (k int PRIMARY KEY, v int)"));
+  ASSERT_OK(codb.Execute("CREATE TABLE colo_b (k int PRIMARY KEY, v int)"));
+  constexpr int kRowsPerTable = 50;
+  ASSERT_OK(codb.ExecuteFormat(
+      "INSERT INTO colo_a SELECT g, g * 10 FROM generate_series(1, $0) g", kRowsPerTable));
+  ASSERT_OK(codb.ExecuteFormat(
+      "INSERT INTO colo_b SELECT g, g * 7  FROM generate_series(1, $0) g", kRowsPerTable));
+
+  // The colocation parent id addresses the whole tablet (both tables).
+  const auto parent_table = ASSERT_RESULT(GetColocationParentTableId(client_.get(), "codb"));
+
+  auto parse_totals = [](const std::string& output) -> std::pair<uint64_t, uint64_t> {
+    const auto row_prefix = "Total row count: ";
+    const auto hash_prefix = "Total XOR hash: ";
+    auto rp = output.find(row_prefix);
+    auto hp = output.find(hash_prefix);
+    CHECK(rp != std::string::npos && hp != std::string::npos) << output;
+    return {std::stoull(output.substr(rp + strlen(row_prefix))),
+            std::stoull(output.substr(hp + strlen(hash_prefix)))};
+  };
+
+  // Read time T captured while every row still holds its original value.
+  const auto read_ht = ASSERT_RESULT(cluster_->master()->GetServerTime());
+  auto [baseline_rows, baseline_hash] =
+      parse_totals(ASSERT_RESULT(CallAdmin("get_table_hash", parent_table, read_ht.ToUint64())));
+  ASSERT_EQ(baseline_rows, 2 * kRowsPerTable);
+
+  // Overwrite every row in both tables *after* T. The old values now sit below T; a compaction
+  // whose cutoff passes T would GC them, so a fresh iterator reading at T would miss those rows.
+  ASSERT_OK(codb.Execute("UPDATE colo_a SET v = v + 100000"));
+  ASSERT_OK(codb.Execute("UPDATE colo_b SET v = v + 100000"));
+
+  // Slow every per-table scan (both tables have column "v") so the whole-tablet scan stays in
+  // flight long enough for a compaction to land between its two per-table iterators.
+  ASSERT_OK(cluster_->SetFlagOnTServers("TEST_fetch_next_delay_column", "v"));
+  ASSERT_OK(cluster_->SetFlagOnTServers("TEST_fetch_next_delay_ms", "200"));
+
+  // Whole-tablet scan in the background under a single read time T.
+  Result<std::string> scan_output = STATUS(Uninitialized, "");
+  std::thread scan_thread([&] {
+    scan_output = CallAdmin("get_table_hash", parent_table, read_ht.ToUint64());
+  });
+  auto joiner = ScopeExit([&scan_thread] {
+    if (scan_thread.joinable()) {
+      scan_thread.join();
+    }
+  });
+
+  // Wait long enough for the scan to register read time T and open the first table's iterator (the
+  // FetchNext delay keeps it on the first table for ~kRowsPerTable * 200ms), then compact. The
+  // compaction completes well before the scan moves on to the second table's fresh iterator.
+  SleepFor(5s * kTimeMultiplier);
+  ASSERT_OK(CompactTablets(cluster_.get(), 300s * kTimeMultiplier));
+
+  scan_thread.join();
+
+  // The pinned scan must still see the original (pre-update) data across both tables.
+  ASSERT_OK(scan_output);
+  auto [scan_rows, scan_hash] = parse_totals(*scan_output);
+  ASSERT_EQ(scan_rows, baseline_rows);
+  ASSERT_EQ(scan_hash, baseline_hash);
 }
 
 // Test get_table_hash with a partition-key sub-range on a (non-colocated) hash-partitioned table.

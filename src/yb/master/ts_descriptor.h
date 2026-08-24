@@ -240,6 +240,18 @@ class TSDescriptor : public MetadataCowWrapper<PersistentTServerInfo> {
     return leader_count_;
   }
 
+  void inc_pending_leader_drain_notification() {
+    pending_leader_drain_notification_++;
+  }
+
+  bool pending_leader_drain_notification() const {
+    return pending_leader_drain_notification_;
+  }
+
+  bool exchg_pending_leader_drain_notification(uint32_t old_value, uint32_t new_value) {
+    return pending_leader_drain_notification_.compare_exchange_strong(old_value, new_value);
+  }
+
   MicrosTime physical_time() const {
     SharedLock<decltype(mutex_)> l(mutex_);
     return physical_time_;
@@ -254,6 +266,8 @@ class TSDescriptor : public MetadataCowWrapper<PersistentTServerInfo> {
     SharedLock<decltype(mutex_)> l(mutex_);
     return hybrid_time_;
   }
+
+  DbOidToHybridTimeMap GetYsqlDbOldestPinnedReadTimes() const;
 
   MonoDelta heartbeat_rtt() const {
     SharedLock<decltype(mutex_)> l(mutex_);
@@ -298,6 +312,7 @@ class TSDescriptor : public MetadataCowWrapper<PersistentTServerInfo> {
   struct TSPathMetrics {
     uint64_t used_space = 0;
     uint64_t total_space = 0;
+    std::string storage_tier;
   };
 
   std::unordered_map<std::string, TSPathMetrics> path_metrics() {
@@ -449,6 +464,13 @@ class TSDescriptor : public MetadataCowWrapper<PersistentTServerInfo> {
 
   // The number of tablets for which this ts is a leader.
   int leader_count_ GUARDED_BY(mutex_);
+
+  // State reflecting that the tserver might be unaware of the leader rebalancing
+  // due to leader blacklist.
+  std::atomic<uint32> pending_leader_drain_notification_{0};
+
+  // Per-database oldest read HybridTime pinned by live PG transactions on this tserver.
+  DbOidToHybridTimeMap ts_ysql_db_oldest_pinned_read_times_ GUARDED_BY(mutex_);
 
   std::string placement_id_ GUARDED_BY(mutex_);
 

@@ -32,6 +32,8 @@
 
 #include "yb/tools/yb-admin_cli.h"
 
+#include <algorithm>
+#include <limits>
 #include <memory>
 #include <unordered_set>
 #include <utility>
@@ -111,9 +113,11 @@ constexpr int32 kDefaultRpcPort = 9100;
 const string kMinus = "minus";
 
 const std::string namespace_expression =
-    "<namespace>:\n [(ycql|ysql).]<namespace_name> (default ycql.)";
-const std::string table_expression = "<table>:\n <namespace> <table_name> | tableid.<table_id>";
-const std::string index_expression = "<index>:\n  <namespace> <index_name> | tableid.<index_id>";
+    "<namespace>\n  [(ycql|ysql).]<namespace_name> (default: ycql.)";
+const std::string table_expression =
+    "<table>\n  <namespace> <table_name> | tableid.<table_id>";
+const std::string index_expression =
+    "<index>\n  <namespace> <index_name> | tableid.<index_id>";
 
 Status GetUniverseConfig(ClusterAdminClient* client, const ClusterAdminCli::CLIArguments&) {
   RETURN_NOT_OK_PREPEND(client->GetUniverseConfig(), "Unable to get universe config");
@@ -397,22 +401,125 @@ Status PrintJsonResult(Result<rapidjson::Document>&& action_result) {
   return Status::OK();
 }
 
+// Levenshtein edit distance between two strings, used to suggest the closest command names when
+// the operation the user typed is not a prefix of any registered command. Uses two rolling rows
+// instead of the full matrix since only the previous row is needed.
+size_t EditDistance(const string& lhs, const string& rhs) {
+  vector<size_t> prev(rhs.size() + 1);
+  vector<size_t> curr(rhs.size() + 1);
+  for (size_t j = 0; j <= rhs.size(); ++j) {
+    prev[j] = j;
+  }
+  for (size_t i = 1; i <= lhs.size(); ++i) {
+    curr[0] = i;
+    for (size_t j = 1; j <= rhs.size(); ++j) {
+      const size_t substitution_cost = (lhs[i - 1] == rhs[j - 1]) ? 0 : 1;
+      curr[j] = std::min({
+          prev[j] + 1,                     // deletion
+          curr[j - 1] + 1,                 // insertion
+          prev[j - 1] + substitution_cost  // substitution
+      });
+    }
+    prev.swap(curr);
+  }
+  return prev[rhs.size()];
+}
+
 }  // namespace
 
 std::string ClusterAdminCli::GetArgumentExpressions(const std::string& usage_arguments) {
-  std::string expressions;
+  bool has_namespace = false;
+  bool has_table = false;
+  bool has_index = false;
   std::stringstream ss(usage_arguments);
   std::string next_argument;
   while (ss >> next_argument) {
-    if (next_argument == "<namespace>" || next_argument == "<source_namespace>") {
-      expressions += namespace_expression + '\n';
-    } else if (next_argument == "<table>") {
-      expressions += table_expression + '\n';
-    } else if (next_argument == "<index>") {
-      expressions += index_expression + '\n';
+    // usage_arguments_ marks optional arguments with surrounding '[' ']' and repeated ones with
+    // a trailing "...", e.g. "[<namespace> <table_name> [<table_name>]...]". Strip those
+    // decorations before comparing, otherwise a placeholder inside brackets never matches and its
+    // definition is silently omitted.
+    const auto begin = next_argument.find_first_not_of('[');
+    const auto end = next_argument.find_last_not_of("].");
+    const std::string token = (begin == std::string::npos || end == std::string::npos ||
+                                begin > end)
+                                   ? std::string()
+                                   : next_argument.substr(begin, end - begin + 1);
+    if (token == "<namespace>" || token == "<source_namespace>") {
+      has_namespace = true;
+    } else if (token == "<table>") {
+      has_table = true;
+    } else if (token == "<index>") {
+      has_index = true;
     }
   }
+  // The <table> and <index> definitions themselves reference <namespace>, so it must be defined
+  // whenever they are. Each placeholder is emitted once, referencing definitions first.
+  has_namespace |= has_table || has_index;
+  std::string expressions;
+  if (has_table) {
+    expressions += table_expression + '\n';
+  }
+  if (has_index) {
+    expressions += index_expression + '\n';
+  }
+  if (has_namespace) {
+    expressions += namespace_expression + '\n';
+  }
   return expressions.empty() ? "" : "Definitions: " + expressions;
+}
+
+std::vector<std::string> ClusterAdminCli::GetSuggestedCommands(const std::string& op) const {
+  if (op.empty()) {
+    return {};
+  }
+
+  // Prefer commands that the typed operation is a prefix of, e.g. "list_snapshot_schedule" points
+  // the user at "list_snapshot_schedules". command_indexes_ is sorted, so the prefix matches form
+  // a contiguous range starting at lower_bound(op).
+  std::vector<std::string> candidates;
+  for (auto it = command_indexes_.lower_bound(op); it != command_indexes_.end(); ++it) {
+    if (!boost::starts_with(it->first, op)) {
+      break;
+    }
+    if (!commands_[it->second].hidden_) {
+      candidates.push_back(it->first);
+    }
+  }
+  if (!candidates.empty()) {
+    return candidates;
+  }
+
+  // Otherwise fall back to fuzzy matching so that a typo anywhere in the name - a transposition or
+  // a wrong or missing leading character - still resolves to the closest command(s), e.g.
+  // "list_tabels" -> "list_tables". Scale the tolerance with the length of the operation so that
+  // short names don't match everything, and keep only the commands tied for the smallest distance
+  // so the suggestion list stays short.
+  const size_t max_distance = std::max<size_t>(2, op.size() / 3);
+  size_t best_distance = std::numeric_limits<size_t>::max();
+  for (const auto& [name, index] : command_indexes_) {
+    if (commands_[index].hidden_) {
+      continue;
+    }
+    // The edit distance is at least the difference in lengths, so skip the full computation for
+    // commands that cannot possibly be within the tolerance.
+    const size_t len_diff =
+        op.size() > name.size() ? op.size() - name.size() : name.size() - op.size();
+    if (len_diff > max_distance) {
+      continue;
+    }
+    const size_t distance = EditDistance(op, name);
+    if (distance > max_distance) {
+      continue;
+    }
+    if (distance < best_distance) {
+      best_distance = distance;
+      candidates.clear();
+    }
+    if (distance == best_distance) {
+      candidates.push_back(name);
+    }
+  }
+  return candidates;
 }
 
 Status ClusterAdminCli::RunCommand(
@@ -446,8 +553,19 @@ Status ClusterAdminCli::Run(int argc, char** argv) {
   const string addrs = FLAGS_master_addresses;
   if (!FLAGS_init_master_addrs.empty()) {
     std::vector<HostPort> init_master_addrs;
-    RETURN_NOT_OK(HostPort::ParseStrings(
-        FLAGS_init_master_addrs, master::kMasterDefaultPort, &init_master_addrs));
+    const auto parse_status = HostPort::ParseStrings(
+        FLAGS_init_master_addrs, master::kMasterDefaultPort, &init_master_addrs);
+    // Neither failure may return InvalidArgument: SetUsage() has not run yet, so main()'s
+    // InvalidArgument branch would print an unset google::ProgramUsage() -- "Warning:
+    // SetUsageMessage() never called" as the entire error message. ParseStrings() also splits with
+    // SkipEmpty(), so a value of "," parses to zero addresses and returns OK; indexing that is out
+    // of bounds (#33435).
+    if (!parse_status.ok() || init_master_addrs.empty()) {
+      cerr << "Invalid --init_master_addrs '" << FLAGS_init_master_addrs << "': "
+           << (parse_status.ok() ? "no addresses found" : parse_status.message().ToBuffer())
+           << endl;
+      return STATUS(RuntimeError, "Invalid --init_master_addrs");
+    }
     client_.reset(new ClusterAdminClient(
         init_master_addrs[0], MonoDelta::FromMilliseconds(FLAGS_timeout_ms)));
   } else {
@@ -472,7 +590,19 @@ Status ClusterAdminCli::Run(int argc, char** argv) {
 
   if (cmd == command_indexes_.end()) {
     cerr << "Invalid operation: " << op << endl;
-    return ClusterAdminCli::kInvalidArguments;
+
+    const auto suggestions = GetSuggestedCommands(op);
+    if (!suggestions.empty()) {
+      cerr << "Did you mean one of these?" << endl;
+      for (const auto& suggestion : suggestions) {
+        cerr << "  " << suggestion << endl;
+      }
+    }
+    cerr << "Run '" << prog_name << "' with no operation to see all available operations." << endl;
+
+    // The targeted error and suggestions above are more helpful than the full command list, so
+    // return a non-InvalidArgument status to keep main() from additionally dumping the usage.
+    return STATUS_FORMAT(RuntimeError, "Invalid operation: $0", op);
   }
 
   // Init client.
@@ -503,24 +633,43 @@ void ClusterAdminCli::Register(
 void ClusterAdminCli::SetUsage(const string& prog_name) {
   ostringstream str;
 
-  str << prog_name << " [--master_addresses server1:port,server2:port,server3:port,...] "
-      << " [--timeout_ms <millisec>] [--certs_dir_name <dir_name>] <operation>" << endl
-      << "<operation> must be one of:" << endl;
+  str << "Usage:" << endl
+      << "  " << prog_name << " [global flags] <operation> [args]" << endl
+      << endl
+      << "Common global flags:" << endl
+      << "  --master_addresses host:port[,host:port,...]  (default: localhost:7100)" << endl
+      << "  --init_master_addrs host:port                 (alternative to --master_addresses)"
+      << endl
+      << "  --timeout_ms <millisec>                       (default: 60000)" << endl
+      << "  --certs_dir_name <dir>" << endl
+      << "  --flagfile <path>" << endl
+      << endl
+      << "Tip:" << endl
+      << "  Use --flagfile with the master's server.conf to automatically pick up" << endl
+      << "  master_addresses and certs_dir, avoiding manual flag entry." << endl
+      << endl
+      << "Example:" << endl
+      << "  " << prog_name << " --flagfile /path/to/master/conf/server.conf list_all_masters"
+      << endl
+      << endl
+      << "Operations:" << endl;
 
-  for (size_t i = 0; i < commands_.size(); ++i) {
-    const auto& command = commands_[i];
+  // Number only the operations actually printed, so a hidden command's slot in commands_ doesn't
+  // leave a gap in the visible list (e.g. "85. ..." followed by "87. ..." with no "86.").
+  size_t visible_number = 0;
+  for (const auto& command : commands_) {
     if (command.hidden_) {
       continue;
     }
-    str << ' ' << i + 1 << ". " << command.name_ << (command.usage_arguments_.empty() ? "" : " ")
-        << command.usage_arguments_ << endl;
+    str << "  " << ++visible_number << ". " << command.name_
+        << (command.usage_arguments_.empty() ? "" : " ") << command.usage_arguments_ << endl;
   }
 
-  str << endl;
-  str << namespace_expression << endl;
-  str << table_expression << endl;
-  str << index_expression << endl;
-
+  // Argument placeholders like <namespace>/<table>/<index> are defined per-command instead of
+  // in a global footer here: only a minority of operations use them, and RunCommand() prints the
+  // relevant definitions alongside a specific command's usage when that command's arguments are
+  // invalid. GetArgumentExpressions() keeps that output self-contained by also defining
+  // <namespace> whenever a <table>/<index> definition references it.
   google::SetUsageMessage(str.str());
 }
 
@@ -3213,7 +3362,11 @@ int main(int argc, char** argv) {
   }
 
   if (s.IsInvalidArgument()) {
-    google::ShowUsageWithFlagsRestrict(argv[0], __FILE__);
+    // Print the usage message set up by ClusterAdminCli::SetUsage directly, rather than
+    // google::ShowUsageWithFlagsRestrict(argv[0], __FILE__), which additionally dumps every gflag
+    // defined in this file with its build-relative source path, type, and default -- noise that
+    // buries the operation catalog the usage message already lists in full.
+    std::cout << google::ProgramUsage();
   }
 
   return 1;

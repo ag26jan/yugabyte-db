@@ -681,12 +681,6 @@
         },
         {
           "properties" : {
-            "apiKey" : {
-              "description" : "API key",
-              "maxLength" : 2147483647,
-              "minLength" : 1,
-              "type" : "string"
-            },
             "routingKey" : {
               "description" : "Routing key",
               "maxLength" : 2147483647,
@@ -695,7 +689,6 @@
             }
           },
           "required" : [
-            "apiKey",
             "routingKey"
           ],
           "type" : "object"
@@ -2198,7 +2191,8 @@
             "RunScript",
             "CreateFileCollection",
             "DownloadFileCollection",
-            "DeleteFileCollection"
+            "DeleteFileCollection",
+            "UpdateClusters"
           ],
           "example" : "Create User",
           "readOnly" : true,
@@ -2409,6 +2403,9 @@
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
         },
+        "creationSucceeded" : {
+          "type" : "boolean"
+        },
         "currentClusterType" : {
           "enum" : [
             "PRIMARY",
@@ -2575,6 +2572,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -2629,6 +2629,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -2955,6 +2956,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -3175,6 +3179,26 @@
       },
       "required" : [
         "availabilityZones"
+      ],
+      "type" : "object"
+    },
+    "AzNodesSpec" : {
+      "properties" : {
+        "azCode" : {
+          "type" : "string"
+        },
+        "code" : {
+          "type" : "string"
+        },
+        "masterSpecification" : {
+          "$ref" : "#/definitions/NodeSpec"
+        },
+        "tserverSpecification" : {
+          "$ref" : "#/definitions/NodeSpec"
+        }
+      },
+      "required" : [
+        "code"
       ],
       "type" : "object"
     },
@@ -4062,6 +4086,7 @@
             "NFS",
             "AZ",
             "GCS",
+            "OCI",
             "FILE"
           ],
           "type" : "string"
@@ -4516,6 +4541,7 @@
             "NFS",
             "AZ",
             "GCS",
+            "OCI",
             "FILE"
           ],
           "type" : "string"
@@ -5306,6 +5332,9 @@
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
         },
+        "creationSucceeded" : {
+          "type" : "boolean"
+        },
         "currentClusterType" : {
           "enum" : [
             "PRIMARY",
@@ -5475,6 +5504,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -5529,6 +5561,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -5855,6 +5888,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -6294,7 +6330,8 @@
             "DATE",
             "TIME",
             "JSONB",
-            "USER_DEFINED_TYPE"
+            "USER_DEFINED_TYPE",
+            "VECTOR"
           ],
           "type" : "string"
         },
@@ -6336,7 +6373,8 @@
             "DATE",
             "TIME",
             "JSONB",
-            "USER_DEFINED_TYPE"
+            "USER_DEFINED_TYPE",
+            "VECTOR"
           ],
           "type" : "string"
         },
@@ -6365,7 +6403,8 @@
             "DATE",
             "TIME",
             "JSONB",
-            "USER_DEFINED_TYPE"
+            "USER_DEFINED_TYPE",
+            "VECTOR"
           ],
           "type" : "string"
         }
@@ -6622,7 +6661,17 @@
         "serverCert" : {
           "type" : "string"
         },
+        "serverCertExpirySecs" : {
+          "format" : "int64",
+          "type" : "integer"
+        },
         "serverKey" : {
+          "type" : "string"
+        },
+        "signerPrivateKey" : {
+          "type" : "string"
+        },
+        "signerPublicKey" : {
           "type" : "string"
         }
       },
@@ -6631,7 +6680,10 @@
         "compressor",
         "offloadable",
         "serverCert",
-        "serverKey"
+        "serverCertExpirySecs",
+        "serverKey",
+        "signerPrivateKey",
+        "signerPublicKey"
       ],
       "type" : "object"
     },
@@ -8453,6 +8505,9 @@
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
         },
+        "creationSucceeded" : {
+          "type" : "boolean"
+        },
         "currentClusterType" : {
           "enum" : [
             "PRIMARY",
@@ -8616,6 +8671,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -8670,6 +8728,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -8996,6 +9055,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -9273,6 +9335,9 @@
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
         },
+        "creationSucceeded" : {
+          "type" : "boolean"
+        },
         "currentClusterType" : {
           "enum" : [
             "PRIMARY",
@@ -9448,6 +9513,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -9502,6 +9570,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -9828,6 +9897,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -10821,6 +10893,9 @@
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
         },
+        "creationSucceeded" : {
+          "type" : "boolean"
+        },
         "currentClusterType" : {
           "enum" : [
             "PRIMARY",
@@ -10987,6 +11062,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -11041,6 +11119,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -11367,6 +11446,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -11577,6 +11659,9 @@
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
         },
+        "creationSucceeded" : {
+          "type" : "boolean"
+        },
         "currentClusterType" : {
           "enum" : [
             "PRIMARY",
@@ -11740,6 +11825,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -11794,6 +11882,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -12120,6 +12209,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -13093,6 +13185,7 @@
             "NFS",
             "AZ",
             "GCS",
+            "OCI",
             "FILE"
           ],
           "type" : "string"
@@ -14381,8 +14474,11 @@
       ],
       "type" : "object"
     },
-    "NodeSpecification" : {
+    "NodeSpec" : {
       "properties" : {
+        "backupProxyConfig" : {
+          "$ref" : "#/definitions/ProxyConfig"
+        },
         "cgroupSize" : {
           "format" : "int32",
           "type" : "integer"
@@ -14395,26 +14491,16 @@
         },
         "k8SNodeResourceSpec" : {
           "$ref" : "#/definitions/K8SNodeResourceSpec"
-        },
-        "proxyConfig" : {
-          "$ref" : "#/definitions/ProxyConfig"
-        }
-      },
-      "type" : "object"
-    },
-    "NodesSpecification" : {
-      "properties" : {
-        "masterSpecification" : {
-          "$ref" : "#/definitions/NodeSpecification"
-        },
-        "tserverSpecification" : {
-          "$ref" : "#/definitions/NodeSpecification"
         }
       },
       "type" : "object"
     },
     "OCICloudInfo" : {
       "properties" : {
+        "ociAuthType" : {
+          "description" : "OCI authentication type (API_KEY or INSTANCE_PRINCIPAL)",
+          "type" : "string"
+        },
         "ociCompartmentId" : {
           "description" : "OCI Compartment OCID",
           "type" : "string"
@@ -14451,6 +14537,22 @@
             "HOSTVPC"
           ],
           "readOnly" : true,
+          "type" : "string"
+        }
+      },
+      "type" : "object"
+    },
+    "OCIRegionCloudInfo" : {
+      "properties" : {
+        "instanceTemplate" : {
+          "type" : "string",
+          "description" : "The OCI Instance Configuration OCID to use for nodes created in this region."
+        },
+        "vnet" : {
+          "type" : "string"
+        },
+        "ybImage" : {
+          "description" : "<b style=\"color:#ff0000\">Deprecated since YBA version 2.20.0.</b> Use provider.imageBundle instead",
           "type" : "string"
         }
       },
@@ -14595,6 +14697,11 @@
           "readOnly" : true,
           "type" : "string"
         },
+        "embedded" : {
+          "description" : "True when this collector is the embedded PA managed by EmbeddedCollectorInitializer",
+          "readOnly" : true,
+          "type" : "boolean"
+        },
         "inUseStatus" : {
           "description" : "In Use Status",
           "enum" : [
@@ -14708,6 +14815,11 @@
           "format" : "uuid",
           "readOnly" : true,
           "type" : "string"
+        },
+        "embedded" : {
+          "description" : "True when this collector is the embedded PA managed by EmbeddedCollectorInitializer",
+          "readOnly" : true,
+          "type" : "boolean"
         },
         "metricsPassword" : {
           "description" : "Metrics API Password",
@@ -16294,9 +16406,6 @@
           },
           "type" : "object"
         },
-        "baseNodesSpecification" : {
-          "$ref" : "#/definitions/NodesSpecification"
-        },
         "enableLoadBalancer" : {
           "type" : "boolean"
         },
@@ -16321,11 +16430,8 @@
           },
           "type" : "object"
         },
-        "perAZOverrides" : {
-          "additionalProperties" : {
-            "$ref" : "#/definitions/NodesSpecification"
-          },
-          "type" : "object"
+        "nodesSpecs" : {
+          "$ref" : "#/definitions/RootNodesSpec"
         },
         "providerType" : {
           "enum" : [
@@ -16347,6 +16453,11 @@
           "type" : "string"
         }
       },
+      "required" : [
+        "nodesSpecs",
+        "providerType",
+        "providerUUID"
+      ],
       "type" : "object"
     },
     "ProvisionUniverseNodesParams" : {
@@ -16393,6 +16504,9 @@
         },
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
+        },
+        "creationSucceeded" : {
+          "type" : "boolean"
         },
         "currentClusterType" : {
           "enum" : [
@@ -16565,6 +16679,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -16619,6 +16736,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -16945,6 +17063,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -17096,6 +17217,9 @@
         },
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
+        },
+        "creationSucceeded" : {
+          "type" : "boolean"
         },
         "currentClusterType" : {
           "enum" : [
@@ -17260,6 +17384,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -17314,6 +17441,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -17640,6 +17768,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -17866,6 +17997,9 @@
         },
         "kubernetes" : {
           "$ref" : "#/definitions/KubernetesRegionInfo"
+        },
+        "oci" : {
+          "$ref" : "#/definitions/OCIRegionCloudInfo"
         }
       },
       "type" : "object"
@@ -17985,6 +18119,32 @@
         "latitude",
         "longitude",
         "name"
+      ],
+      "type" : "object"
+    },
+    "RegionNodesSpec" : {
+      "properties" : {
+        "azNodesSpecs" : {
+          "items" : {
+            "$ref" : "#/definitions/AzNodesSpec"
+          },
+          "type" : "array"
+        },
+        "code" : {
+          "type" : "string"
+        },
+        "masterSpecification" : {
+          "$ref" : "#/definitions/NodeSpec"
+        },
+        "regionCode" : {
+          "type" : "string"
+        },
+        "tserverSpecification" : {
+          "$ref" : "#/definitions/NodeSpec"
+        }
+      },
+      "required" : [
+        "code"
       ],
       "type" : "object"
     },
@@ -18145,6 +18305,9 @@
         },
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
+        },
+        "creationSucceeded" : {
+          "type" : "boolean"
         },
         "currentClusterType" : {
           "enum" : [
@@ -18324,6 +18487,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -18378,6 +18544,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -18704,6 +18871,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -19012,6 +19182,9 @@
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
         },
+        "creationSucceeded" : {
+          "type" : "boolean"
+        },
         "currentClusterType" : {
           "enum" : [
             "PRIMARY",
@@ -19175,6 +19348,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -19229,6 +19405,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -19555,6 +19732,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -20569,6 +20749,9 @@
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
         },
+        "creationSucceeded" : {
+          "type" : "boolean"
+        },
         "currentClusterType" : {
           "enum" : [
             "PRIMARY",
@@ -20732,6 +20915,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -20786,6 +20972,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -21112,6 +21299,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -21193,6 +21383,23 @@
         "sleepAfterTServerRestartMillis",
         "upgradeOption"
       ],
+      "type" : "object"
+    },
+    "RootNodesSpec" : {
+      "properties" : {
+        "masterSpecification" : {
+          "$ref" : "#/definitions/NodeSpec"
+        },
+        "regionNodesSpecs" : {
+          "items" : {
+            "$ref" : "#/definitions/RegionNodesSpec"
+          },
+          "type" : "array"
+        },
+        "tserverSpecification" : {
+          "$ref" : "#/definitions/NodeSpec"
+        }
+      },
       "type" : "object"
     },
     "RunQueryFormData" : {
@@ -21458,6 +21665,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -21784,6 +21992,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -21885,6 +22096,7 @@
               "DeletePitrConfig",
               "RestoreSnapshotSchedule",
               "EditUniverse",
+              "RollbackEditUniverse",
               "EditKubernetesUniverse",
               "ExternalScript",
               "ImportIntoTable",
@@ -22211,6 +22423,9 @@
               "UpdateUniverseIntent",
               "UpdateConsistencyCheck",
               "FreezeUniverse",
+              "MarkRollbackUnsafe",
+              "RestoreUniverseDetailsFromDelta",
+              "ConfirmEditRollbackMembership",
               "QueryLdapServer",
               "DbLdapSync",
               "CheckForClusterServers",
@@ -22395,6 +22610,11 @@
           ],
           "type" : "string"
         },
+        "isKubernetesOperatorControlled" : {
+          "description" : "True if this schedule is controlled by the Kubernetes operator",
+          "readOnly" : true,
+          "type" : "boolean"
+        },
         "nextExpectedTask" : {
           "description" : "Next expected task time",
           "example" : "2022-12-12T13:07:18Z",
@@ -22461,6 +22681,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -22787,6 +23008,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -23031,6 +23255,9 @@
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
         },
+        "creationSucceeded" : {
+          "type" : "boolean"
+        },
         "currentClusterType" : {
           "enum" : [
             "PRIMARY",
@@ -23194,6 +23421,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -23248,6 +23478,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -23574,6 +23805,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -24198,6 +24432,9 @@
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
         },
+        "creationSucceeded" : {
+          "type" : "boolean"
+        },
         "currentClusterType" : {
           "enum" : [
             "PRIMARY",
@@ -24361,6 +24598,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -24415,6 +24655,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -24741,6 +24982,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -25245,6 +25489,7 @@
               "SoftwareUpgradeYB",
               "FinalizeUpgrade",
               "RollbackUpgrade",
+              "RollbackEditUniverse",
               "GFlagsUpgrade",
               "KubernetesOverridesUpgrade",
               "EditKubernetesUniverse",
@@ -25537,6 +25782,9 @@
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
         },
+        "creationSucceeded" : {
+          "type" : "boolean"
+        },
         "currentClusterType" : {
           "enum" : [
             "PRIMARY",
@@ -25703,6 +25951,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -25757,6 +26008,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -26083,6 +26335,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -26227,6 +26482,9 @@
         },
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
+        },
+        "creationSucceeded" : {
+          "type" : "boolean"
         },
         "currentClusterType" : {
           "enum" : [
@@ -26397,6 +26655,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -26451,6 +26712,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -26777,6 +27039,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -27066,6 +27331,9 @@
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
         },
+        "creationSucceeded" : {
+          "type" : "boolean"
+        },
         "currentClusterType" : {
           "enum" : [
             "PRIMARY",
@@ -27232,6 +27500,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -27286,6 +27557,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -27612,6 +27884,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -27730,6 +28005,9 @@
         },
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
+        },
+        "creationSucceeded" : {
+          "type" : "boolean"
         },
         "currentClusterType" : {
           "enum" : [
@@ -27891,6 +28169,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -27945,6 +28226,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -28271,6 +28553,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -28388,6 +28673,9 @@
         },
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
+        },
+        "creationSucceeded" : {
+          "type" : "boolean"
         },
         "currentClusterType" : {
           "enum" : [
@@ -28550,6 +28838,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -28604,6 +28895,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -28930,6 +29222,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -29146,17 +29441,17 @@
           "type" : "integer"
         },
         "sendBatchMaxSize" : {
-          "description" : "Maximum batch size for query logs exporter",
+          "description" : "Maximum batch size for logs exporter",
           "format" : "int32",
           "type" : "integer"
         },
         "sendBatchSize" : {
-          "description" : "Batch size for query logs exporter",
+          "description" : "Batch size for logs exporter",
           "format" : "int32",
           "type" : "integer"
         },
         "sendBatchTimeoutSeconds" : {
-          "description" : "Maximum batch timeout for query logs exporter in seconds",
+          "description" : "Maximum batch timeout for logs exporter in seconds",
           "format" : "int32",
           "type" : "integer"
         }
@@ -29308,6 +29603,14 @@
           "description" : "Universe version",
           "format" : "int32",
           "type" : "integer"
+        }
+      },
+      "type" : "object"
+    },
+    "UniverseSettings" : {
+      "properties" : {
+        "expertMode" : {
+          "type" : "boolean"
         }
       },
       "type" : "object"
@@ -29554,6 +29857,9 @@
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
         },
+        "creationSucceeded" : {
+          "type" : "boolean"
+        },
         "currentClusterType" : {
           "enum" : [
             "PRIMARY",
@@ -29717,6 +30023,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -29771,6 +30080,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -30097,6 +30407,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -30754,6 +31067,9 @@
         "creatingUser" : {
           "$ref" : "#/definitions/Users"
         },
+        "creationSucceeded" : {
+          "type" : "boolean"
+        },
         "currentClusterType" : {
           "enum" : [
             "PRIMARY",
@@ -30948,6 +31264,9 @@
         "universePaused" : {
           "type" : "boolean"
         },
+        "universeSettings" : {
+          "$ref" : "#/definitions/UniverseSettings"
+        },
         "universeUUID" : {
           "description" : "Associated universe UUID",
           "format" : "uuid",
@@ -31002,6 +31321,7 @@
             "DeletePitrConfig",
             "RestoreSnapshotSchedule",
             "EditUniverse",
+            "RollbackEditUniverse",
             "EditKubernetesUniverse",
             "ExternalScript",
             "ImportIntoTable",
@@ -31328,6 +31648,9 @@
             "UpdateUniverseIntent",
             "UpdateConsistencyCheck",
             "FreezeUniverse",
+            "MarkRollbackUnsafe",
+            "RestoreUniverseDetailsFromDelta",
+            "ConfirmEditRollbackMembership",
             "QueryLdapServer",
             "DbLdapSync",
             "CheckForClusterServers",
@@ -32053,7 +32376,6 @@
         }
       },
       "required" : [
-        "bootstrapParams",
         "tables"
       ],
       "type" : "object"
@@ -32397,14 +32719,7 @@
         }
       },
       "required" : [
-        "enabled",
-        "excludedCategories",
-        "excludedKeyspaces",
-        "excludedUsers",
-        "includedCategories",
-        "includedKeyspaces",
-        "includedUsers",
-        "logLevel"
+        "enabled"
       ],
       "type" : "object"
     },
@@ -32488,13 +32803,10 @@
         }
       },
       "required" : [
-        "classes",
         "enabled",
         "logCatalog",
         "logClient",
-        "logLevel",
         "logParameter",
-        "logParameterMaxSize",
         "logRelation",
         "logRows",
         "logStatement",
@@ -44916,6 +45228,15 @@
             "name" : "uniUUID",
             "required" : true,
             "type" : "string"
+          },
+          {
+            "default" : 10,
+            "description" : "Maximum number of most recent health check entries to return. Defaults to 10.",
+            "format" : "int32",
+            "in" : "query",
+            "name" : "limit",
+            "required" : false,
+            "type" : "integer"
           }
         ],
         "responses" : {
@@ -52528,6 +52849,9 @@
     },
     {
       "name" : "Node instances"
+    },
+    {
+      "name" : "PA Proxy"
     },
     {
       "name" : "PITR management"

@@ -161,6 +161,11 @@ public enum TaskType {
           new Pair<>(CustomerTask.TaskType.Update, CustomerTask.TargetType.Universe),
           new Pair<>(CustomerTask.TaskType.Update, CustomerTask.TargetType.Cluster))),
 
+  RollbackEditUniverse(
+      com.yugabyte.yw.commissioner.tasks.RollbackEditUniverse.class,
+      CustomerTask.TaskType.RollbackEditUniverse,
+      CustomerTask.TargetType.Universe),
+
   EditKubernetesUniverse(
       com.yugabyte.yw.commissioner.tasks.EditKubernetesUniverse.class,
       CustomerTask.TaskType.Update,
@@ -1268,6 +1273,14 @@ public enum TaskType {
 
   FreezeUniverse(com.yugabyte.yw.commissioner.tasks.subtasks.FreezeUniverse.class),
 
+  MarkRollbackUnsafe(com.yugabyte.yw.commissioner.tasks.subtasks.MarkRollbackUnsafe.class),
+
+  RestoreUniverseDetailsFromDelta(
+      com.yugabyte.yw.commissioner.tasks.subtasks.RestoreUniverseDetailsFromDelta.class),
+
+  ConfirmEditRollbackMembership(
+      com.yugabyte.yw.commissioner.tasks.subtasks.ConfirmEditRollbackMembership.class),
+
   QueryLdapServer(com.yugabyte.yw.commissioner.tasks.subtasks.ldapsync.QueryLdapServer.class),
 
   DbLdapSync(com.yugabyte.yw.commissioner.tasks.subtasks.ldapsync.DbLdapSync.class),
@@ -1367,6 +1380,7 @@ public enum TaskType {
           .put(DestroyUniverse, 6)
           .put(EditKubernetesUniverse, 7)
           .put(EditUniverse, 8)
+          .put(RollbackEditUniverse, 17)
           .put(PauseUniverse, 9)
           .put(ReadOnlyClusterCreate, 10)
           .put(ReadOnlyClusterDelete, 11)
